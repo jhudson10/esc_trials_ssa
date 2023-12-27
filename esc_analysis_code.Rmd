@@ -1,0 +1,1287 @@
+---
+title: "trials_analysis"
+author: "jonathan hudson"
+date: "2023-08-30"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+library(googlesheets4)
+library(googledrive)
+library(dplyr)
+library(stringr)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(maps)
+library(svglite)
+library(epiR)
+library(hrbrthemes)
+library(epitools)
+setwd("/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials")
+```
+
+
+# AACT 
+```{r}
+# AACT database query
+c <- read_sheet(ss = "https://docs.google.com/spreadsheets/d/1U454JFnD9cnICnIEXsxMA0s-ZxXYY5nZh61rhxq7PFI/edit#gid=0", sheet = "Sheet1")
+
+#Exract the NCT ID's
+c <- c %>%
+  filter(pharma == TRUE, 
+         inclusion2 == "Include", 
+         str_detect(nct_id, "^NCT")) %>%
+  distinct(nct_id, .keep_all = TRUE)
+
+write_csv(c, "ref.csv")
+
+```
+
+
+
+```{r}
+# Connect to the AACT database
+drv <- dbDriver('PostgreSQL')
+con <- dbConnect(drv, dbname="aact", host="aact-db.ctti-clinicaltrials.org", port=5432, user="jhudson1", password="Ourfc1869!")
+
+# Generate the nctids string from dataframe c
+nctids <- unique(c$nct_id)
+nctids <- paste0("('", paste(nctids, collapse = "','"), "')")
+
+# Query the countries table for the NCT IDs of interest
+sql_string <- paste0("SELECT nct_id, name 
+                      FROM countries 
+                      WHERE nct_id IN ", nctids)
+countries_df <- dbGetQuery(con, sql_string)
+
+# Group by NCT ID and consolidate the list of countries
+countries_list <- countries_df %>%
+  group_by(nct_id) %>%
+  summarise(countries = paste(name, collapse = ", "))
+
+
+# Query the studies table for the NCT IDs of interest to get enrollment numbers
+ sql_enrollment <- paste0("SELECT nct_id, enrollment as n_participants 
+                        FROM studies 
+                         WHERE nct_id IN ", nctids)
+enrollment_df <- dbGetQuery(con, sql_enrollment)
+
+# Disconnect from the database
+dbDisconnect(con)
+
+final_df <- left_join(countries_list, enrollment_df, by = "nct_id")
+
+# View the result
+print(final_df)
+```
+
+
+```{r}
+library(googlesheets4)
+library(dplyr)
+#read the data back into google sheets
+# 1. Read the data from the Google Sheet into R
+sheet_url <- "https://docs.google.com/spreadsheets/d/1U454JFnD9cnICnIEXsxMA0s-ZxXYY5nZh61rhxq7PFI/edit?usp=sharing"
+sheet_data <- read_sheet(ss = sheet_url, sheet = "Sheet1")
+
+# 2. Merge this data with your final_df dataframe based on nct_id
+# This will update the rows in sheet_data with matching nct_id from final_df
+updated_data <- left_join(sheet_data, final_df, by = "nct_id", suffix = c("_original", "_new"))
+
+# For columns that have "_new" suffix, replace the original columns with these values
+updated_data$countries <- coalesce(updated_data$countries_new, updated_data$countries_original)
+updated_data$n <- coalesce(updated_data$n_participants, updated_data$n)
+
+# Drop the temporary columns
+updated_data <- updated_data %>% select(-ends_with("_new"), -ends_with("_original"))
+
+# 3. Write the merged data back to the Google Sheet
+# Write the merged data back to the Google Sheet
+sheet_write(updated_data, ss = sheet_url, sheet = "Sheet1")
+
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+
+# Create a vector of Sub-Saharan African countries with only the first letter capitalized
+ssa_countries <- c(
+  "Angola", "Benin", "Botswana", "Burkina Faso", "Burundi", "Cabo Verde", "Cameroon", 
+  "Central African Republic", "Chad", "Comoros", "Congo, Dem. Rep.", "Congo, Rep.", 
+  "Cote d'Ivoire", "Equatorial Guinea", "Eritrea", "Eswatini", "Ethiopia", "Gabon", 
+  "Gambia, The", "Ghana", "Guinea", "Guinea-Bissau", "Kenya", "Lesotho", "Liberia", 
+  "Madagascar", "Malawi", "Mali", "Mauritania", "Mauritius", "Mozambique", "Namibia", 
+  "Niger", "Nigeria", "Rwanda", "Sao Tome and Principe", "Senegal", "Seychelles", 
+  "Sierra Leone", "Somalia", "South Africa", "South Sudan", "Sudan", "Tanzania", 
+  "Togo", "Uganda", "Zambia", "Zimbabwe"
+)
+
+# Add a column with the count of Sub-Saharan African countries involved in each trial
+bc <- bc %>%
+  rowwise() %>%
+  mutate(ssa_count = sum(str_count(countries, paste(ssa_countries, collapse = "|"))))
+
+# Print the resulting dataframe
+print(bc)
+
+```
+
+```{r}
+b2 <- b$baseline_measurements %>%
+     select(nct_id, number_analyzed, number_analyzed_units)
+b2 <- b2 %>%
+     distinct()
+
+b2 <- b2 %>%
+  rename(n_participants = number_analyzed) %>%
+  group_by(nct_id) %>%
+  filter(n_participants == max(n_participants, na.rm = TRUE)) %>%
+  ungroup()
+  
+# Print the resulting dataframe to check the results
+print(b2)
+
+```
+
+```{r}
+#merge countries and participants
+
+bc2 <- bc %>%
+  inner_join(b2 %>%
+               select(nct_id, n_participants), by = "nct_id") %>%
+  select(nct_id, countries, n_participants)
+
+
+
+# Print the resulting dataframe to check the results
+write_csv(bc2, "bc2.csv")
+
+```
+
+# Read in data and filter
+```{r}
+# Replace 'Sheet1' with the name of the sheet/tab you want to read
+d <- read_sheet(ss = "https://docs.google.com/spreadsheets/d/1U454JFnD9cnICnIEXsxMA0s-ZxXYY5nZh61rhxq7PFI/edit#gid=0", sheet = "Sheet1")
+
+  # filter only trials looking at pharmacotherapy
+d <- d %>%
+     filter(pharma == TRUE, 
+         inclusion2 == "Include")
+
+d <- d %>%
+  select(
+    Citation, id, year, extracted_from, inclusion2,
+    recommendation, intervention, pharma                                                                                     , `level of evidence`,
+    category_guidelines, nct_id, nct_id_present,
+    design, countries, n, 'no. of SSA sites', condition, id, hic, umic,
+    lmic, lic,
+    `No. of participants from SSA`, `proportion of study population from SSA`, 
+    `list of SSA countries included`
+  )
+
+d <- d %>%
+  rename(
+    citation = Citation, 
+    year = year, 
+    extracted_from = extracted_from, 
+    inclusion_criteria = inclusion2, 
+    recommendation = recommendation, 
+    intervention = intervention, 
+    pharma = pharma, 
+    evidence_level = `level of evidence`, 
+    category_guidelines = category_guidelines, 
+    nct_id = nct_id, 
+    nct_id_present = nct_id_present, 
+    ssa_count = 'no. of SSA sites',
+    design = design,
+    n_participants = n, 
+    ssa_participant_count = `No. of participants from SSA`, 
+    ssa_participant_proportion = `proportion of study population from SSA`, 
+    ssa_country_list = `list of SSA countries included`
+  )
+
+# Create new column for national vs. international
+d <- d %>%
+  mutate(inter = ifelse(str_count(countries, ",") >= 1, TRUE, FALSE))
+
+# Remove trailing commas, periods, and extra spaces
+d$countries <- gsub("[,.]$", "", d$countries)
+d$countries <- trimws(d$countries)
+
+# Convert 'Na' and empty strings to NA
+d$countries[d$countries == "Na" | d$countries == ""] <- NA
+
+
+
+
+```
+
+# Cleaning
+```{r}
+library(ggplot2)
+library(maps)
+library(dplyr)
+# Replace 'Sheet1' with the name of the sheet/tab you want to read
+d <- read_sheet(ss = "https://docs.google.com/spreadsheets/d/1U454JFnD9cnICnIEXsxMA0s-ZxXYY5nZh61rhxq7PFI/edit#gid=0", sheet = "Sheet1")
+
+# filter only trials looking at pharmacotherapy
+d <- d %>%
+     filter(pharma == TRUE, 
+         inclusion2 == "Include")
+
+d <- d %>%
+  select(
+    Citation, id, year, extracted_from, inclusion2,
+    recommendation, intervention, pharma                                                                                     , `level of evidence`,
+    category_guidelines, nct_id, nct_id_present,
+    design, countries, n, 'no. of SSA sites', condition, id, hic, umic,
+    lmic, lic,
+    `No. of participants from SSA`, `proportion of study population from SSA`, 
+    `list of SSA countries included`, high_income, central_e, seasia, sasia, nafrica, ssa, latin
+  )
+
+d <- d %>%
+  rename(
+    citation = Citation, 
+    year = year, 
+    extracted_from = extracted_from, 
+    inclusion_criteria = inclusion2, 
+    recommendation = recommendation, 
+    intervention = intervention, 
+    pharma = pharma, 
+    evidence_level = `level of evidence`, 
+    category_guidelines = category_guidelines, 
+    nct_id = nct_id, 
+    nct_id_present = nct_id_present, 
+    ssa_count = 'no. of SSA sites',
+    design = design,
+    n_participants = n, 
+    ssa_participant_count = `No. of participants from SSA`, 
+    ssa_participant_proportion = `proportion of study population from SSA`, 
+    ssa_country_list = `list of SSA countries included`
+  )
+
+# Create new column for national vs. international
+d <- d %>%
+  mutate(inter = ifelse(str_count(countries, ",") >= 1, TRUE, FALSE))
+
+# Data cleaning
+# Remove trailing commas, periods, and extra spaces
+d$countries <- gsub("[,.]$", "", d$countries)
+d$countries <- trimws(d$countries)
+
+# Convert 'Na' and empty strings to NA
+d$countries[d$countries == "Na" | d$countries == ""] <- NA
+
+
+```
+
+
+
+# Heart Failure only
+```{r}
+e <- d %>%
+  filter(condition == "hf")
+#### map ####
+# Calculate the total ssa_count
+total_ssa_count <- sum(e$ssa_count, na.rm = TRUE)
+# Calculate the proportion of the total ssa_count to the total number of trials
+ssa_proportion <- (total_ssa_count / nrow(e))*100
+ssa_proportion <- round(ssa_proportion, 1)
+# Create a data frame to hold the results
+result_table <- data.frame(
+  Total_SSA_Count = total_ssa_count,
+  Total_Trials = nrow(e),
+  SSA_Proportion = ssa_proportion
+)
+
+true_count <- sum(d$pharma, na.rm = TRUE)
+print(paste("Number of TRUE values in the 'pharma' column:", true_count))
+
+# Print the result table
+print(result_table)
+
+country_counthf <- e %>%
+  separate_rows(countries, sep = ",\\s*") %>%
+  group_by(countries) %>%
+  summarise(count = n(), .groups = 'drop')
+total_trials_hf <- sum(country_counthf$count)
+
+total_trials_hf <- nrow(e)
+
+country_count_e <- country_counthf %>%
+  mutate(percentage = (count / total_trials_hf) * 100)
+
+# View the updated dataframe
+print(country_counthf)
+
+#Plot bar chart
+library(ggplot2)
+
+ggplot(country_counthf, aes(x = reorder(countries, -count), y = count)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Use this to make it a horizontal bar chart
+  labs(title = "Clinical Trials by Country",
+       x = "Country",
+       y = "Number of Trials") +
+  theme_minimal()
+
+# Get world map data and make countries lowercase
+world_map <- map_data("world")
+world_map$region <- tolower(world_map$region)
+
+# Ensure country names are in lowercase
+country_counthf$countries <- tolower(country_counthf$countries)
+
+# Merge the datasets ensuring all countries from world map are included
+hfmerged_data <- full_join(world_map, country_counthf, by = c("region" = "countries"))
+
+# Replace NA in count with 0
+
+hfmerged_data$count[is.na(hfmerged_data$count)] <- 0
+hfmerged_data <- hfmerged_data[!(hfmerged_data$region == "antarctica"), ]
+
+# Step 2: Binning
+
+# Adjusting the bins slightly for the 0 category
+bins <- c(-0.1, 0, 5, 15, 30, Inf)
+labels <- c("0", "1-5", "6-15", "16-30", "31-50")
+
+hfmerged_data$freq_bin <- cut(hfmerged_data$count, breaks = bins, labels = labels, include.lowest = TRUE, right = TRUE)
+
+# Step 3: Plotting
+
+hfmap <- ggplot(data = hfmerged_data, aes(x = long, y = lat, group = group, fill = freq_bin)) + 
+  geom_polygon(color = "white", linewidth = 0.1) +
+  scale_fill_manual(values = c("0" = "#E0E0E0",  # Setting this to light gray
+                               "1-5" = "#B3E2FF", 
+                               "6-15" = "#66C2FF", 
+                               "16-30" = "#3399FF", 
+                               "31-50" = "#0066CC"),
+                    name = "No. of HF Trials",
+                    drop = FALSE) + 
+  theme_ipsum() + 
+  labs(title = "") + 
+  theme(legend.position = c(0.2, 0.35),
+        legend.direction = "vertical",
+        axis.text = element_blank(), 
+        axis.title = element_blank(),
+        legend.title = element_text(size = 14),
+         legend.text = element_text(size = 14),
+        plot.margin = unit(c(0,0,0,0),"cm"))
+
+
+ggsave(filename = "fig2a.png", plot= hfmap, path = "/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials/submission/Figures", width = 10, height = 5, units = "in") 
+# Display the plot
+print(hfmap)
+
+
+##### Analysis by year #######
+# Convert the list column to a character column
+e$year_char <- sapply(e$year, function(x) ifelse(length(x) == 0, NA, x[1]))
+
+# Convert the character column to a numeric column
+e$year_num <- as.numeric(e$year_char)
+
+# Define the year ranges
+year_ranges <- c(-Inf, 1990, 2000, 2010, 2020, Inf)
+
+# Create a new column with the year ranges
+e$year_range <- cut(e$year_num, breaks = year_ranges, 
+                    labels = c("Before 1990", "1990-1999", "2000-2009", "2010-2019", "2020-Present"), 
+                    right = FALSE)
+
+# Group the data by the year ranges and calculate the sum of ssa_count in each group
+resulthf <- e %>%
+  group_by(year_range) %>%
+  summarise(
+    Total_Trials = n(),
+    SSA_Trial_Count = sum(ssa_count, na.rm = TRUE),
+    SSA_Proportion = sum(ssa_count, na.rm = TRUE) / n()
+  )
+
+# Print the resulthfhf
+print(resulthf)
+
+# Plot the resulthfs
+resulthf$SSA_Proportion_Percent <- resulthf$SSA_Proportion * 100
+
+# Create the plot
+g <- ggplot(resulthf, aes(x = year_range)) +
+  geom_bar(aes(y = Total_Trials, fill = "Total Trials"), stat = "identity", width = 0.7, show.legend = FALSE) +
+  geom_line(aes(y = SSA_Proportion_Percent, group = 1, color = "Proportion in SSA"), size = 1, show.legend = FALSE) +
+  geom_point(aes(y = SSA_Proportion_Percent, color = "Proportion in SSA"), show.legend = FALSE) +
+  scale_y_continuous(
+    name = "Total number of HF trials (bar plot)",
+    sec.axis = sec_axis(~ ., name = "Proportion of HF trials in SSA (line plot)", 
+                        labels = scales::percent_format(scale = 1))  # Ensure proper scaling
+  ) +
+  scale_color_manual(values = c("Proportion in SSA" = "#0066CC")) +
+  scale_fill_manual(values = c("Total Trials" = "#B3E2FF"), guide = FALSE) +
+  guides(color = guide_legend(title = NULL)) +
+  labs(x = NULL) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.title.y = element_text(color = "black", size=12),
+        axis.title.y.right = element_text(color = "#0066CC", size=12))
+
+ggsave(filename = "fig3a.png", plot = g, width = 10, height = 6, dpi = 300)
+
+# Print the plot
+print(g)
+
+
+# Odds ratios
+
+# Compare 1990-1999 to 2000-2009
+hf9099 <- resulthf[resulthf$year_range == "1990-1999",]
+hf0009<- resulthf[resulthf$year_range == "2000-2009",]
+
+# Construct 2x2 table
+hf_90_00 <- matrix(c(hf0009$SSA_Trial_Count, hf0009$Total_Trials - hf0009$SSA_Trial_Count,
+                       hf9099$SSA_Trial_Count, hf9099$Total_Trials - hf9099$SSA_Trial_Count), ncol=2, byrow=TRUE)
+
+oddsratio(hf_90_00)
+
+# compare 1990-1999 to 2010-2019
+hf9099 <- resulthf[resulthf$year_range == "1990-1999",]
+hf1019<- resulthf[resulthf$year_range == "2010-2019",]
+
+# Construct 2x2 table
+hf_90_10 <- matrix(c(hf1019$SSA_Trial_Count, hf1019$Total_Trials - hf1019$SSA_Trial_Count,
+                       hf9099$SSA_Trial_Count, hf9099$Total_Trials - hf9099$SSA_Trial_Count), ncol=2, byrow=TRUE)
+
+oddsratio(hf_90_10)
+
+# compare 1990-1999 to 2010-2019
+hf9099 <- resulthf[resulthf$year_range == "1990-1999",]
+hf20<- resulthf[resulthf$year_range == "2020-Present",]
+
+# Construct 2x2 table
+hf_90_20 <- matrix(c(hf20$SSA_Trial_Count, hf20$Total_Trials - hf20$SSA_Trial_Count,
+                       hf9099$SSA_Trial_Count, hf9099$Total_Trials - hf9099$SSA_Trial_Count), ncol=2, byrow=TRUE)
+
+oddsratio(hf_90_20)
+
+prop.trend.test(resulthf$SSA_Trial_Count, resulthf$Total_Trials)
+
+
+
+
+
+##### Analysis of intervention #######
+# Load required packages
+library(officer)
+library(flextable)
+
+# Your existing code to create the 'result' dataframe
+result <- e %>%
+  mutate(intervention = case_when(
+    intervention %in% c("ace", "arni", "arb") ~ "raas",
+    intervention == "bb" ~ "bb",
+    intervention == "mra" ~ "mra",
+    intervention == "sglt2" ~ "sglt2",
+    intervention == "diuretics" ~ "diuretics",
+    TRUE ~ "other"
+  )) %>%
+  group_by(intervention) %>%
+  summarise(
+    Total_Trials = n(),
+    Total_SSA_Count = sum(ssa_count, na.rm = TRUE),
+    SSA_Proportion = (sum(ssa_count, na.rm = TRUE) / n()) * 100,
+    Total_High_Income_Count = sum(high_income, na.rm = TRUE),
+    High_Income_Proportion = (sum(high_income, na.rm = TRUE) / n()) * 100,
+    Total_Central_E_Count = sum(central_e, na.rm = TRUE),
+    Central_E_Proportion = (sum(central_e, na.rm = TRUE) / n()) * 100,
+    Total_SEAsia_Count = sum(seasia, na.rm = TRUE),
+    SEAsia_Proportion = (sum(seasia, na.rm = TRUE) / n()) * 100,
+    Total_SAsia_Count = sum(sasia, na.rm = TRUE),
+    SAsia_Proportion = (sum(sasia, na.rm = TRUE) / n()) * 100,
+    Total_NAfrica_Count = sum(nafrica, na.rm = TRUE),
+    NAfrica_Proportion = (sum(nafrica, na.rm = TRUE) / n()) * 100,
+    Total_Latin_Count = sum(latin, na.rm = TRUE),
+    Latin_Proportion = (sum(latin, na.rm = TRUE) / n()) * 100,
+    .groups = 'drop'
+  )%>%
+  mutate(
+    Trials_in_SSA = paste0(Total_SSA_Count, " (", round(SSA_Proportion, 1), "%)"),
+    Trials_in_High_Income = paste0(Total_High_Income_Count, " (", round(High_Income_Proportion, 1), "%)"),
+    Trials_in_Central_E = paste0(Total_Central_E_Count, " (", round(Central_E_Proportion, 1), "%)"),
+    Trials_in_SEAsia = paste0(Total_SEAsia_Count, " (", round(SEAsia_Proportion, 1), "%)"),
+    Trials_in_SAsia = paste0(Total_SAsia_Count, " (", round(SAsia_Proportion, 1), "%)"),
+    Trials_in_NAfrica = paste0(Total_NAfrica_Count, " (", round(NAfrica_Proportion, 1), "%)"),
+    Trials_in_Latin = paste0(Total_Latin_Count, " (", round(Latin_Proportion, 1), "%)")
+  ) %>%
+  select(-Total_SSA_Count, -SSA_Proportion,
+         -Total_High_Income_Count, -High_Income_Proportion,
+         -Total_Central_E_Count, -Central_E_Proportion,
+         -Total_SEAsia_Count, -SEAsia_Proportion,
+         -Total_SAsia_Count, -SAsia_Proportion,
+         -Total_NAfrica_Count, -NAfrica_Proportion,
+         -Total_Latin_Count, -Latin_Proportion)  # Remove the original columns
+
+
+
+
+result <- result %>%
+  arrange(factor(intervention, levels = c("raas", "bb", "mra", "sglt2", "diuretics", "other")))
+
+
+
+
+result <- result %>%
+  mutate(intervention = recode(intervention, 
+                               raas = "RAAS",
+                               bb = "Beta blockers",
+                               mra = "MRA",
+                               sglt2 = "SGLT2i",
+                               diuretics = "Diuretics",
+                               other = "Other"))
+
+result <- result %>%
+  rename(
+    Intervention = intervention,
+    "All RCTs" = Total_Trials,
+    "Sub-Saharan Africa (%)" = Trials_in_SSA,
+    "High Income (%)" = Trials_in_High_Income,
+    "Central Europe, Eastern Europe, and Central Asia (%)" = Trials_in_Central_E,
+    "Latin America and the Caribbean (%)" =  Trials_in_Latin,
+    "South Asia (%)" = Trials_in_SAsia, 
+    "Southeast Asia, East Asia, and Oceania" = Trials_in_SEAsia,
+    "North Africa and Middle East" = Trials_in_NAfrica
+    )
+
+
+# Print the result
+print(result)
+
+write_csv(result, file = "hf_intervention_table.csv")
+
+# Create a new Word document
+doc <- read_docx()
+
+# Add a title to the Word document
+doc <- doc %>%
+  body_add_par("Result Table", style = "heading 1")
+
+# Convert the dataframe to a flextable
+result_table <- qflextable(result)
+
+# Add the table to the Word document
+doc <- doc %>%
+  body_add_flextable(value = result_table)
+
+# Save the Word document
+print(doc, target = "intervention_hftable.docx")
+
+##### Analysis by income #####
+# Calculate the total number of trials in dataframe e
+total_trials <- nrow(e)
+
+# Calculate the number of trials in each income group
+hic_trials <- sum(e$hic == TRUE)
+umic_trials <- sum(e$umic == TRUE)
+lmic_trials <- sum(e$lmic == TRUE)
+lic_trials <- sum(e$lic == TRUE)
+
+# Calculate the proportion of trials in each income group
+hic_prop <- (hic_trials / total_trials) * 100
+umic_prop <- (umic_trials / total_trials) * 100
+lmic_prop <- (lmic_trials / total_trials) * 100
+lic_prop <- (lic_trials / total_trials) * 100
+
+# Create a table with the results
+result_table <- data.frame(
+  Income_Group = c("HIC", "UMIC", "LMIC", "LIC"),
+  Number_of_Trials = c(hic_trials, umic_trials, lmic_trials, lic_trials),
+  Proportion_of_Total = c(hic_prop, umic_prop, lmic_prop, lic_prop)
+)
+
+# Print the result table
+print(result_table)
+
+
+```
+
+
+# Acute Coronary Syndrome
+```{r}
+f <- d %>%
+  filter(condition == "acs")
+#### Total number of trials that include SSA site ####
+# Calculate the total ssa_count
+total_ssa_count <- sum(f$ssa_count, na.rm = TRUE)
+# Calculate the proportion of the total ssa_count to the total number of trials
+ssa_proportion <- (total_ssa_count / nrow(f))*100
+# Create a data frame to hold the results
+result_table <- data.frame(
+  Total_SSA_Count = total_ssa_count,
+  Total_Trials = nrow(f),
+  SSA_Proportion = ssa_proportion
+)
+
+true_count <- sum(f$pharma, na.rm = TRUE)
+print(paste("Number of TRUE values in the 'pharma' column:", true_count))
+
+# Print the result table
+print(result_table)
+#### Country Distribution ####
+country_count_acs <- f %>%
+  separate_rows(countries, sep = ",\\s*") %>%
+  group_by(countries) %>%
+  summarise(count = n(), .groups = 'drop')
+total_trials_acs <- sum(country_count_acs$count)
+
+total_trials_acs <- nrow(f)
+
+country_count_acs <- country_count_acs %>%
+  mutate(percentage = (count / total_trials_acs) * 100)
+
+# View the updated dataframe
+print(country_count_acs)
+
+#Plot bar chart
+library(ggplot2)
+
+ggplot(country_count_acs, aes(x = reorder(countries, -count), y = count)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Use this to make it a horizontal bar chart
+  labs(title = "Clinical Trials by Country",
+       x = "Country",
+       y = "Number of Trials") +
+  theme_minimal()
+
+# Get world map data and make countries lowercase
+world_map <- map_data("world")
+world_map$region <- tolower(world_map$region)
+
+# Ensure country names are in lowercase
+country_count_acs$countries <- tolower(country_count_acs$countries)
+
+# Merge the datasets ensuring all countries from world map are included
+merged_data_acs <- full_join(world_map, country_count_acs, by = c("region" = "countries"))
+
+# Replace NA in count with 0
+merged_data_acs$count[is.na(merged_data_acs$count)] <- 0
+merged_data_acs <- merged_data_acs[!(merged_data_acs$region == "antarctica"), ]
+
+# Step 2: Binning
+
+# Adjusting the bins slightly for the 0 category
+bins <- c(-0.1, 0.1, 10, 50, 100, Inf)
+labels <- c("0", "1-10", "10-50", "50-100", ">100")
+
+merged_data_acs$freq_bin <- cut(merged_data_acs$count, breaks = bins, labels = labels, include.lowest = TRUE, right = TRUE)
+
+# Step 3: Plotting
+
+acsmap <- ggplot(data = merged_data_acs, aes(x = long, y = lat, group = group, fill = freq_bin)) + 
+  geom_polygon(color = "white", linewidth = 0.25) +
+  scale_fill_manual(values = c("0" = "#E0E0E0",  # Setting this to light gray
+                               "1-10" = "#FFB3B3", 
+                               "10-50" = "#FF6666", 
+                               "50-100" = "#FF3300", 
+                               ">100" = "#B20000"), 
+                    name = "No. of Trials",
+                    drop = FALSE) + 
+  theme_minimal() + 
+  labs(title = "") + 
+  theme(legend.position = c(0.2, 0.35),
+        legend.direction = "vertical",
+        axis.text = element_blank(), 
+        axis.title = element_blank(),
+        legend.title = element_text(size = 14),
+        plot.margin = unit(c(0,0,0,0),"cm"),
+         legend.text = element_text(size = 14))
+
+ggsave(filename = "fig2b.png", plot= acsmap, path = "/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials/submission/Figures", width = 10, height = 5, units = "in") 
+
+# Display the plot
+print(acsmap)
+
+#### ACS analysis by year ####
+
+# Convert the list column to a character column
+f$year_char <- sapply(f$year, function(x) ifelse(length(x) == 0, NA, x[1]))
+
+# Convert the character column to a numeric column
+f$year_num <- as.numeric(f$year_char)
+
+# Define the year ranges
+year_ranges <- c(-Inf, 1990, 2000, 2010, 2020, Inf)
+
+# Create a new column with the year ranges
+f$year_range <- cut(f$year_num, breaks = year_ranges, 
+                    labels = c("Before 1990", "1990-1999", "2000-2009", "2010-2019", "2020-Present"), 
+                    right = FALSE)
+
+# Group the data by the year ranges and calculate the sum of ssa_count in each group
+result_acs <- f %>%
+  group_by(year_range) %>%
+  summarise(
+    Total_Trials = n(),
+    SSA_Trial_Count = sum(ssa_count, na.rm = TRUE),
+    SSA_Proportion = sum(ssa_count, na.rm = TRUE) / n()
+  )
+
+# Print the result
+print(result_acs)
+
+# Plot the results
+result_acs$SSA_Proportion_Percent <- result_acs$SSA_Proportion * 100
+max_value <- max(result_acs$Total_Trials)
+label_position <- max_value + 10  # Adjust this value as needed to fine-tune the vertical position
+
+# Second plot with two y axis
+# Create the plot
+# Assuming 'result_acs' has columns 'year_range', 'Total_Trials', and 'SSA_Proportion_Percent'
+# And assuming the range of SSA_Proportion_Percent is from 0 to 23
+
+# Set limits for primary and secondary y-axes
+ylim_primary <- c(0, max(result_acs$Total_Trials))  # Replace with maximum value of Total_Trials if needed
+ylim_secondary <- c(0, 50)  # 50% as mentioned
+
+# Calculate the coefficients for linear transformation
+b <- diff(ylim_primary) / diff(ylim_secondary)
+a <- ylim_primary[1] - b * ylim_secondary[1]
+
+# Adjust your ggplot code
+k <- ggplot(result_acs, aes(x = year_range)) +
+  geom_bar(aes(y = Total_Trials, fill = "Total Trials"), stat = "identity", width = 0.7, show.legend = FALSE) +
+  geom_line(aes(y = a + SSA_Proportion_Percent * b, group = 1, color = "Proportion in SSA"),
+            size = 1, show.legend = FALSE) +
+  geom_point(aes(y = a + SSA_Proportion_Percent * b, color = "Proportion in SSA"), show.legend = FALSE) +
+  scale_y_continuous(
+    name = "Total number of ACS trials (bar plot)",
+    sec.axis = sec_axis(~(. - a) / b, name = "Proportion of ACS trials in SSA (line plot)", labels = scales::percent_format(scale = 1))
+  ) +
+  scale_color_manual(values = c("Proportion in SSA" = "#B20000")) +
+  scale_fill_manual(values = c("Total Trials" = "#FFB3B3"), guide = FALSE) +
+  guides(color = guide_legend(title = NULL)) +
+  labs(x = NULL) +
+  theme_minimal() +
+  theme(axis.title.y = element_text(color = "black", size=12),
+        plot.background = element_rect(fill = "white", colour = NA),
+        axis.title.y.right = element_text(color = "#B20000", size=12))
+
+# Save the plot
+ggsave(filename = "fig3b.png", plot = k, width = 10, height = 6, dpi = 300)
+
+# Print the plot
+print(k)
+
+
+
+# Odds ratios
+
+# Extract data for the two time periods
+acspre90 <- result_acs[result_acs$year_range == "Before 1990",]
+acs0009<- result_acs[result_acs$year_range == "2000-2009",]
+
+# Construct 2x2 table
+table_data_acs <- matrix(c(acs0009$SSA_Trial_Count, acs0009$Total_Trials - acs0009$SSA_Trial_Count,
+                       acspre90$SSA_Trial_Count, acspre90$Total_Trials - acspre90$SSA_Trial_Count), ncol=2, byrow=TRUE)
+
+table_data_acs
+
+oddsratio(table_data_acs)
+
+# compare pre 19990 to 2010-2019
+acspre90 <- result_acs[result_acs$year_range == "Before 1990",]
+acs1019<- result_acs[result_acs$year_range == "2010-2019",]
+
+# Construct 2x2 table
+acs_90_2010 <- matrix(c(acs1019$SSA_Trial_Count, acs1019$Total_Trials - acs1019$SSA_Trial_Count,
+                       acspre90$SSA_Trial_Count, acspre90$Total_Trials - acspre90$SSA_Trial_Count), ncol=2, byrow=TRUE)
+
+acs_90_2010
+
+oddsratio(acs_90_2010)
+
+prop.trend.test(result_acs$SSA_Trial_Count, result_acs$Total_Trials)
+
+##### Analysis of intervention #######
+# Load required packages
+library(officer)
+library(flextable)
+
+f <- f %>% mutate(intervention = case_when(
+    intervention %in% c("ace", "arb") ~ "raas",
+    intervention == "bb" ~ "bb",
+    intervention == "antithrombotic" ~ "antithrombotic",
+    intervention == "statin" ~ "statin",
+    intervention == "diuretics" ~ "diuretics",
+    TRUE ~ "other"
+  ))
+
+result_acs_inter <- f %>%
+  group_by(intervention) %>%
+  summarise(
+    Total_Trials = n(),
+    Total_SSA_Count = sum(ssa_count, na.rm = TRUE),
+    SSA_Proportion = (sum(ssa_count, na.rm = TRUE) / n()) * 100,
+    Total_High_Income_Count = sum(high_income, na.rm = TRUE),
+    High_Income_Proportion = (sum(high_income, na.rm = TRUE) / n()) * 100,
+    Total_Central_E_Count = sum(central_e, na.rm = TRUE),
+    Central_E_Proportion = (sum(central_e, na.rm = TRUE) / n()) * 100,
+    Total_SEAsia_Count = sum(seasia, na.rm = TRUE),
+    SEAsia_Proportion = (sum(seasia, na.rm = TRUE) / n()) * 100,
+    Total_SAsia_Count = sum(sasia, na.rm = TRUE),
+    SAsia_Proportion = (sum(sasia, na.rm = TRUE) / n()) * 100,
+    Total_NAfrica_Count = sum(nafrica, na.rm = TRUE),
+    NAfrica_Proportion = (sum(nafrica, na.rm = TRUE) / n()) * 100,
+    Total_Latin_Count = sum(latin, na.rm = TRUE),
+    Latin_Proportion = (sum(latin, na.rm = TRUE) / n()) * 100,
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    Trials_in_SSA = paste0(Total_SSA_Count, " (", round(SSA_Proportion, 1), "%)"),
+    Trials_in_High_Income = paste0(Total_High_Income_Count, " (", round(High_Income_Proportion, 1), "%)"),
+    Trials_in_Central_E = paste0(Total_Central_E_Count, " (", round(Central_E_Proportion, 1), "%)"),
+    Trials_in_SEAsia = paste0(Total_SEAsia_Count, " (", round(SEAsia_Proportion, 1), "%)"),
+    Trials_in_SAsia = paste0(Total_SAsia_Count, " (", round(SAsia_Proportion, 1), "%)"),
+    Trials_in_NAfrica = paste0(Total_NAfrica_Count, " (", round(NAfrica_Proportion, 1), "%)"),
+    Trials_in_Latin = paste0(Total_Latin_Count, " (", round(Latin_Proportion, 1), "%)")
+  ) %>%
+  select(-Total_SSA_Count, -SSA_Proportion,
+         -Total_High_Income_Count, -High_Income_Proportion,
+         -Total_Central_E_Count, -Central_E_Proportion,
+         -Total_SEAsia_Count, -SEAsia_Proportion,
+         -Total_SAsia_Count, -SAsia_Proportion,
+         -Total_NAfrica_Count, -NAfrica_Proportion,
+         -Total_Latin_Count, -Latin_Proportion)  # Remove the original columns
+
+
+
+result_acs_inter <- result_acs_inter %>%
+  arrange(factor(intervention, levels = c("antithrombotic", "raas", "bb", "statin","other")))
+
+# Rename the columns
+result_acs_inter <- result_acs_inter %>%
+  rename(
+    Intervention = intervention,
+    "All RCTs" = Total_Trials,
+    "Sub-Saharan Africa (%)" = Trials_in_SSA,
+    "High Income (%)" = Trials_in_High_Income,
+    "Central Europe, Eastern Europe, and Central Asia (%)" = Trials_in_Central_E,
+    "Latin America and the Caribbean (%)" =  Trials_in_Latin,
+    "South Asia (%)" = Trials_in_SAsia, 
+    "Southeast Asia, East Asia, and Oceania" = Trials_in_SEAsia,
+    "North Africa and Middle East" = Trials_in_NAfrica
+    )
+
+
+result_acs_inter <- result_acs_inter %>%
+  mutate(Intervention = recode(Intervention, 
+                               raas = "RAAS",
+                               bb = "Beta blockers",
+                               antithrombotic = "Antithrombotics",
+                               statin = "Lipid Lowering",
+                               other = "Other"))
+
+# Print the result
+print(result_acs_inter)
+
+write_csv(result_acs_inter, "acs_intervention.csv")
+
+# Create a new Word document
+doc <- read_docx()
+
+# Add a title to the Word document
+doc <- doc %>%
+  body_add_par("Result Table", style = "heading 1")
+
+# Convert the dataframe to a flextable
+result_table <- qflextable(result_acs_inter)
+
+# Add the table to the Word document
+doc <- doc %>%
+  body_add_flextable(value = result_table)
+
+# Save the Word document
+print(doc, target = "intervention_acstable.docx")
+```
+
+
+# Income analysis
+```{r}
+# For dataframe f (ACS trials)
+
+# Calculate the total number of ACS trials in dataframe f
+total_trials_acs <- nrow(f)
+f$hic <- unlist(f$hic)
+
+
+# Calculate the number of ACS trials in each income group
+hic_trials_acs <- sum(f$hic == TRUE)
+umic_trials_acs <- sum(f$umic == TRUE)
+lmic_trials_acs <- sum(f$lmic == TRUE)
+lic_trials_acs <- sum(f$lic == TRUE)
+
+# Calculate the proportion of ACS trials in each income group
+hic_prop_acs <- (hic_trials_acs / total_trials_acs) * 100
+umic_prop_acs <- (umic_trials_acs / total_trials_acs) * 100
+lmic_prop_acs <- (lmic_trials_acs / total_trials_acs) * 100
+lic_prop_acs <- (lic_trials_acs / total_trials_acs) * 100
+
+# Calculate the total number of trials in dataframe e
+total_trials <- nrow(e)
+
+# Calculate the number of trials in each income group
+hic_trials <- sum(e$hic == TRUE)
+umic_trials <- sum(e$umic == TRUE)
+lmic_trials <- sum(e$lmic == TRUE)
+lic_trials <- sum(e$lic == TRUE)
+
+# Calculate the proportion of trials in each income group
+hic_prop <- (hic_trials / total_trials) * 100
+umic_prop <- (umic_trials / total_trials) * 100
+lmic_prop <- (lmic_trials / total_trials) * 100
+lic_prop <- (lic_trials / total_trials) * 100
+
+# Create a table with the results
+result_table <- data.frame(
+  Income_Group = c("HIC", "UMIC", "LMIC", "LIC"),
+  Number_of_Trials = c(hic_trials, umic_trials, lmic_trials, lic_trials),
+  Proportion_of_Total = c(hic_prop, umic_prop, lmic_prop, lic_prop)
+)
+
+
+combined_table <- data.frame(
+  Income_Group = c("HIC", "UMIC", "LMIC", "LIC"),
+  Heart_Failure = c(
+    paste(hic_trials, "(", round(hic_prop, 2), "%)", sep=""),
+    paste(umic_trials, "(", round(umic_prop, 2), "%)", sep=""),
+    paste(lmic_trials, "(", round(lmic_prop, 2), "%)", sep=""),
+    paste(lic_trials, "(", round(lic_prop, 2), "%)", sep="")
+  ),
+  Acute_Coronary_Syndrome = c(
+    paste(hic_trials_acs, "(", round(hic_prop_acs, 2), "%)", sep=""),
+    paste(umic_trials_acs, "(", round(umic_prop_acs, 2), "%)", sep=""),
+    paste(lmic_trials_acs, "(", round(lmic_prop_acs, 2), "%)", sep=""),
+    paste(lic_trials_acs, "(", round(lic_prop_acs, 2), "%)", sep="")
+  )
+)
+
+# Print the combined result table
+print(combined_table)
+```
+
+
+# gbd data analysis
+```{r}
+# Now, split and count countries
+
+# Convert list columns to logical vectors
+d$hic <- sapply(d$hic, function(x) ifelse(length(x) == 0, NA, x[[1]]))
+d$umic <- sapply(d$umic, function(x) ifelse(length(x) == 0, NA, x[[1]]))
+d$lmic <- sapply(d$lmic, function(x) ifelse(length(x) == 0, NA, x[[1]]))
+d$lic <- sapply(d$lic, function(x) ifelse(length(x) == 0, NA, x[[1]]))
+
+countgdp <- d %>%
+  separate_rows(countries, sep = ",\\s*") %>%
+  group_by(countries) %>%
+  summarise(count = n(), .groups = 'drop')
+
+# Total trials is the number of rows in d
+total<- nrow(d)
+
+countgdp <- countgdp %>%
+  mutate(percentage = (count / total_trials) * 100)
+countgdp$countries <- trimws(countgdp$countries)
+
+# Get GDP data from wbstats
+gdp_data <- read.csv("ggdata3.csv")
+gdp_data$countries <- trimws(gdp_data$countries)
+gdp_data$countries[gdp_data$countries == "Russian Federation"] <- "Russia"
+gdp_data$countries[gdp_data$countries == "Slovak Republic"] <- "Slovakia"
+gdp_data$countries[gdp_data$countries == "Korea, Rep."] <- "South Korea"
+gdp_data$countries[gdp_data$countries == "Turkiye"] <- "Turkey"
+gdp_data$countries[gdp_data$countries == "United States"] <- "USA"
+gdp_data$countries[gdp_data$countries == "United Kingdom"] <- "UK"
+gdp_data$countries[gdp_data$countries == "Venezuela, RB"] <- "Venezuela"
+gdp_data$countries[gdp_data$countries == "Czechia"] <- "Czech Republic"
+gdp_data$countries[gdp_data$countries == "Egypt, Arab Rep."] <- "Egypt"
+
+
+
+
+# Merge the dataframes
+df <- left_join(countgdp, gdp_data, by = "countries")
+df$gdp <- as.numeric(df$gdp)
+df$pop <- as.numeric(df$pop)
+
+df <- df %>% drop_na()
+
+# Create the scatter plot with additional aesthetics
+b <-ggplot(df, aes(x = gdp, y = count)) +
+  geom_point(aes(color = income, size = pop), stroke = 1, alpha = 0.7) +
+  scale_x_log10() +  # Optional: log scale for x-axis
+  scale_size_continuous(range = c(3, 20)) +  # Optional: adjust point sizes
+  xlab("GDP per capita (Log Scale)") +
+  ylab("Number of clinical trials conducted") +
+  guides(size = FALSE)  # Remove legend for population size
+
+b
+ggsave(filename = "bubble.svg", plot= b, path = "/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials/write_up/figures", width = 10, height = 5, units = "in") 
+
+#Plot with mortality rate
+bubble1 <- ggplot(df, aes(x = mortality_rate, y = count)) +
+  geom_point(aes(color = income, size = pop), stroke = 1, alpha = 0.7) +
+  scale_size_continuous(range = c(3, 20)) +  # Optional: adjust point sizes
+   scale_color_discrete(breaks = c("High income", "Upper middle income", "Lower middle income")) +  # Reorder legend entries
+  xlab("Age Standardized CVD Mortality Rate") +
+  ylab("Number of clinical trials conducted") +
+  labs(color = "Country Income Level") +  # Update legend title for 'income' aesthetic
+  guides(size = FALSE) +  # Remove legend for population size
+  theme(legend.position = c(0.7, 0.8),
+        axis.title = element_text(size = 16),
+         axis.text = element_text(size = 16),  # Increase axis text size
+        legend.title = element_text(size = 16),
+        legend.key = element_blank(),
+         legend.box.background = element_blank(),
+        legend.text = element_text(size = 16))
+bubble1
+ggsave(filename = "fig1.png", plot= bubble1, path = "/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials/submission/Figures", width = 10, height = 5, units = "in") 
+
+```
+
+# Time trend analysis   
+```{r}
+d$year <- as.numeric(d$year)
+break_points <- c(1965.9, 1971, 1976, 1981, 1986, 1991, 1996, 2001, 2006, 2011, 2016, 2022.1)
+labels <- c("1966-1971", "1971-1976", "1976-1981", "1981-1986", "1986-1991", "1991-1996", "1996-2001", "2001-2006", "2006-2011", "2011-2016", "2016-2022")
+
+d$YearGroup <- cut(d$year, breaks = break_points, labels = labels, right = TRUE, include.lowest = TRUE)
+
+aggregated_data <- d %>%
+  group_by(YearGroup) %>%
+  summarise(
+    Total_Trials = n(),
+    Trials_in_SSA = sum(ssa_count, na.rm = TRUE),
+    Proportion_in_SSA = (Trials_in_SSA / Total_Trials) * 100
+  )
+print(aggregated_data)
+
+# Adding mid-point year to each interval for numerical representation
+aggregated_data$MidYear <- sapply(strsplit(as.character(aggregated_data$YearGroup), split = "-"), function(x) mean(as.numeric(x)))
+
+# Fit the model
+trend_model <- lm(Proportion_in_SSA ~ MidYear, data = aggregated_data)
+summary(trend_model)
+
+library(ggplot2)
+
+ggplot(aggregated_data, aes(x=MidYear, y=Proportion_in_SSA)) +
+  geom_point() + 
+  geom_smooth(method='lm', se=FALSE) +
+  xlab("Mid-Year of 5-Year Interval") +
+  ylab("Proportion of Trials in SSA (%)")
+
+# For Heart Failure (e)
+e$year <- as.numeric(e$year)
+e$YearGroup <- cut(e$year, breaks = break_points, labels = labels, right = TRUE, include.lowest = TRUE)
+
+# For Acute Coronary Syndrome (f)
+f$year <- as.numeric(f$year)
+f$YearGroup <- cut(f$year, breaks = break_points, labels = labels, right = TRUE, include.lowest = TRUE)
+
+# Aggregate for Heart Failure
+aggregated_data_hf<- e %>%
+  group_by(YearGroup) %>%
+  summarise(
+    Total_Trials = n(),
+    Trials_in_SSA = sum(ssa_count, na.rm = TRUE),
+    Proportion_in_SSA = (Trials_in_SSA / Total_Trials) * 100
+  )
+aggregated_data_hf$MidYear <- sapply(strsplit(as.character(aggregated_data_hf$YearGroup), split = "-"), function(x) mean(as.numeric(x)))
+
+# Aggregate for Acute Coronary Syndrome
+aggregated_data_acs <- f %>%
+  group_by(YearGroup) %>%
+  summarise(
+    Total_Trials = n(),
+    Trials_in_SSA = sum(ssa_count, na.rm = TRUE),
+    Proportion_in_SSA = (Trials_in_SSA / Total_Trials) * 100
+  )
+aggregated_data_acs$MidYear <- sapply(strsplit(as.character(aggregated_data_acs$YearGroup), split = "-"), function(x) mean(as.numeric(x)))
+
+# For Heart Failure
+trend_model_e <- lm(Proportion_in_SSA ~ MidYear, data = aggregated_data_hf)
+
+# For Acute Coronary Syndrome
+trend_model_f <- lm(Proportion_in_SSA ~ MidYear, data = aggregated_data_acs)
+
+# Load ggplot2 if not already loaded
+library(ggplot2)
+
+# Plot the trends
+p <- ggplot() +
+  geom_point(data=aggregated_data_hf, aes(x=MidYear, y=Proportion_in_SSA, color='Heart Failure')) +
+  geom_smooth(data=aggregated_data_hf, aes(x=MidYear, y=Proportion_in_SSA, color='Heart Failure'), method='lm', se=FALSE) +
+  geom_point(data=aggregated_data_acs, aes(x=MidYear, y=Proportion_in_SSA, color='Acute Coronary Syndrome')) +
+  geom_smooth(data=aggregated_data_acs, aes(x=MidYear, y=Proportion_in_SSA, color='Acute Coronary Syndrome'), method='lm', se=FALSE) +
+  xlab("Year") +
+  ylab("Trials in SSA (%)") +
+  scale_color_manual(values = c("Heart Failure" = "blue", "Acute Coronary Syndrome" = "red")) +
+  theme_minimal()+
+  ylim(0, 42)
+
+ggsave(filename = "time_trend.svg", plot= p, path = "/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials/write_up/figures", width = 10, height = 5, units = "in") 
+
+# Poisson regression for Heart Failure
+poisson_model_HF <- glm(Trials_in_SSA ~ MidYear, data = aggregated_data_hf, family = "poisson", offset = log(Total_Trials))
+summary(poisson_model_HF)
+
+# Poisson regression for Acute Coronary Syndrome
+poisson_model_ACS <- glm(Trials_in_SSA ~ MidYear, data = aggregated_data_acs, family = "poisson", offset = log(Total_Trials))
+summary(poisson_model_ACS)
+
+# Predicted values
+aggregated_data_hf$Predicted_Trials_in_SSA <- predict(poisson_model_HF, type = "response")
+aggregated_data_acs$Predicted_Trials_in_SSA <- predict(poisson_model_ACS, type = "response")
+
+# Plot
+library(ggplot2)
+
+pois <- ggplot() +
+  geom_point(data = aggregated_data_hf, aes(x = MidYear, y = Trials_in_SSA / Total_Trials * 100), colour = "red") +
+  geom_point(data = aggregated_data_acs, aes(x = MidYear, y = Trials_in_SSA / Total_Trials * 100), colour = "blue") +
+  geom_line(data = aggregated_data_hf, aes(x = MidYear, y = Predicted_Trials_in_SSA / Total_Trials * 100), colour = "red") +
+  geom_line(data = aggregated_data_acs, aes(x = MidYear, y = Predicted_Trials_in_SSA / Total_Trials * 100), colour = "blue") +
+  labs(x = "Year",
+       y = "Proportion of Trials in SSA (%)") +
+  scale_colour_manual(name = "Condition", 
+                      values = c("red" = "Heart Failure", "blue" = "Acute Coronary Syndrome"))
+
+ggsave(filename = "time_trend_pois.svg", plot= pois, path = "/Users/jonathanhudson/Library/CloudStorage/OneDrive-King'sCollegeLondon/cvd_ssa/cvd_ssa_trials/write_up/figures", width = 10, height = 5, units = "in")
+
+
+```
+
+# Second time trend analysis    
+```{r}
+e$year <- as.numeric(e$year)
+#Create time periods
+e$Time_Period <- cut(e$year, 
+                     breaks = c(-Inf, 1999, 2005, 2010, 2015, Inf), 
+                     labels = c("Pre 2000", "2001-05", "2006-10", "2011-15", "Post 2015"))
+
+f$year <- as.numeric(f$year)
+
+f$Time_Period <- cut(f$year, 
+                     breaks = c(-Inf, 1999, 2005, 2010, 2015, Inf), 
+                     labels = c("Pre 2000", "2001-05", "2006-10", "2011-15", "Post 2015"))
+
+library(dplyr)
+
+agg_e <- e %>%
+  group_by(Time_Period) %>%
+  summarise(
+    Count = sum(ssa_count),
+    total = n(),
+    prop = (Count/total)*100)
+
+agg_f <- f %>%
+  group_by(Time_Period) %>%
+  summarise(
+    Count = sum(ssa_count),
+    total = n(),
+    prop = (Count/total)*100)
+
+library(ggplot2)
+
+# For heart failure trials:
+ggplot(agg_e, aes(x = Time_Period, y = Count)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of Heart Failure Trials in SSA over Time", x = "Time Period", y = "Number of Trials") +
+  theme_minimal()
+
+# For acute coronary syndrome trials:
+ggplot(agg_f, aes(x = Time_Period, y = Count)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of Acute Coronary Syndrome Trials in SSA over Time", x = "Time Period", y = "Number of Trials") +
+  theme_minimal()
+
+agg_e$Condition <- "Heart Failure"
+agg_f$Condition <- "Acute Coronary Syndrome"
+
+combined_data <- rbind(agg_e, agg_f)
+
+ggplot(combined_data, aes(x = Time_Period, y = Count, fill = Condition)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(y = "Number of Trials", x="") +
+  scale_y_continuous(limits = c(0, 10), breaks = seq(0, 10, by = 2), expand = c(0,0)) +
+  theme_minimal() +
+  scale_fill_manual(values = c("Acute Coronary Syndrome" = "#B20000", "Heart Failure" = "#0066CC"))
+```
+
+## Odds ratios for time trend 
+```{r}
+# Ensure you have the epiR package installed and loaded
+
+library(epiR)
+library(epitools)
+
+#For heart failure
+
+# Extract data for the two time periods
+hfpre95 <- agg_e[agg_e$Time_Period == "Pre 2000",]
+hf15 <- agg_e[agg_e$Time_Period == "Post 2015",]
+
+# Construct 2x2 table
+table_data <- matrix(c(hf15$Count, hf15$total - hf15$Count,
+                       hfpre95$Count, hfpre95$total - hfpre95$Count), ncol=2, byrow=TRUE)
+
+# Compute odds ratio
+result <- oddsratio(table_data, correction = TRUE)
+
+print(result)
+prop.trend.test(agg_e$Count, agg_e$total)
+
+#For acs
+# Extract data for the two time periods
+acspre20 <- agg_f[agg_f$Time_Period == "Pre 2000",]
+acs0610 <- agg_f[agg_f$Time_Period == "2006-10",]
+
+# Construct 2x2 table
+table_data_acs <- matrix(c(acs0610$Count, acs0610$total - acs0610$Count,
+                       acspre20$Count, acspre20$total - acspre20$Count), ncol=2, byrow=TRUE)
+
+table_data_acs
+
+oddsratio(table_data_acs)
+```
+
+
+```{r}
+#Odds ratio Pre 2000 compared to Post 2015
+
+acspre20 <- agg_f[agg_f$Time_Period == "Pre 2000",]
+acs15 <- agg_f[agg_f$Time_Period == "Post 2015",]
+table_data_acs2 <- matrix(c(acs15$Count, acs15$total - acs15$Count,
+                       acspre20$Count, acspre20$total - acspre20$Count), ncol=2, byrow=TRUE)
+oddsratio(table_data_acs2)
+prop.trend.test(agg_f$Count, agg_f$total)
+
+```
+
+
+
+# Figures formulation
+```{r}
+library(gridExtra)
+# Arranging them together
+grid.arrange(g, k, nrow = 2)
+```
+
+
+
